@@ -132,7 +132,6 @@ if( $argc > 1 ){
 			}
 			//リサイズ
 			$image->resizeImage( $new_width, $new_height, imagick::FILTER_MITCHELL, 1);
-			}
 		}
 
 		$canvas->newImage( $conf['width'], $conf[ 'height' ], new ImagickPixel("white"));
