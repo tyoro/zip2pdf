@@ -14,3 +14,12 @@
 ・負けない心
 	頑張って！
 
+◯やる事
+	conf.yml.sample を conf.yml にリネーム。
+	設定できる項目とデフォルト値については、conf/base.phpを見てね。
+
+◯使い方
+	php zip2pdf.php --input /huga/hoge/piyo/hoge.zip --output /hehe/hoho/
+
+inputでファイル指定して、outputでディレクトリ指定する。
+outputは書かなければ、inputと同じディレクトリに作られる。
