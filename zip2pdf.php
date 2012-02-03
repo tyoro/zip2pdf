@@ -1,8 +1,11 @@
 <?php
 
-chdir( "/usr/local/sfw/zip2pdf/" );
+	chdir( "/usr/local/sfw/zip2pdf/" );
+	set_include_path(dirname(__FILE__).'/lib:'.get_include_path());
+	set_include_path(dirname(__FILE__).'/conf:'.get_include_path());
 
 include_once './conf/load.php';
+include_once './lib/fpdimage.php';
 
 $start = time();
 $TEST_MODE = false;
@@ -23,83 +26,66 @@ if( $argc > 1 ){
 				break;
 		}
 	}
-
-	$input_file_name =  realpath($input_file_name );
-
-	if (!file_exists( $input_file_name ) ){
-		exit( "input file not found.");
-	}
-	print "input file '$input_file_name'\n";
-	$path_data = pathinfo( $input_file_name );
 	
-	if( $path_data[ "extension" ] != 'zip' ){
-		exit( "no zip file.");
-	}
+	$inputFile = InputFileFactory::getInputFile( $input_file_name );
 
 	if( empty( $output_dir_path ) ){
-		$output_dir_path = $path_data['dirname'].'/';
+		$output_dir_path = $inputFile->dirname.'/';
 	}
 
-	if(	preg_match( "/\[(.*?)\](.*)/", $path_data[ 'filename' ], $matches ) ){
-		$author = mb_convert_encoding($matches[1],"UTF-8");
-		$title = mb_convert_encoding($matches[2],"UTF-8");
-	}else{
-		$author = 'unknown';
-		$title = mb_convert_encoding($path_data[ 'filename' ],"UTF-8");
-	}
+	$pdf_title = "\xEF\xBB\xBF" . $inputFile->title;
+	$prf_author = "\xEF\xBB\xBF" .$inputFile->author;
 
-	$pdf_title = "\xEF\xBB\xBF" . $title;
-	$prf_author = "\xEF\xBB\xBF" .$author;
-
-	$output_file_name = $output_dir_path.$title.".pdf";
+	$output_file_name = $output_dir_path.$inputFile->title.".pdf";
 	
-	$za = new ZipArchive();
-
-	$za->open( $input_file_name);
-	
-	$image = new Imagick();
 	$canvas = new Imagick();
 	$pdf = new Imagick();
 
-	for( $i = 0; $i < $za->numFiles ; $i++ ){
-
-    	$stat = $za->statIndex( $i );
-
-	    $file_name = mb_convert_encoding( ( $stat['name']  ),"UTF8","SJIS" );
-		$path_data = pathinfo( $file_name );
-		print $file_name."\n";
-		$ext = $path_data[ "extension" ];
-		if( $stat['size'] <= 0 || !in_array( $path_data[ "extension" ], Array("jpg","png","jpeg","gif") ) ){
-			print "no support extension.\n";
-			continue;
+	while( $image = $inputFile->getImage() ){
+		
+		//TODO: MagickGetImageColors
+		//MagickGetImageColorspace
+		$color = $inputFile->checkColor();
+		$ext = $inputFile->getCurrentExt();
+		
+		//level,ガンマ補正
+		//$canvas->gammaImage( 1.0/$conf['gamma'] );
+		$image->levelImage(0,1/$conf['gamma'],60535);
+		if( in_array( $ext, Array( 'jpg', "jpeg" ) ) ){
+			//グレースケール化
+			$image->setImageColorspace(Imagick::COLORSPACE_GRAY);
+			//$image->setImageType( Imagick::COLORSPACE_GRAY );
+		}else{
+			//色深度
+			$image->setImageDepth(4);
 		}
 
-		if( $TEST_MODE && $i%30 ){
-			continue;
-		}
-		$image->readImageBlob($za->getFromIndex($i));
-
-		$color = false;
-		// カラー画像の類であるかどうかの判定
-		if( $stat[ "size" ] > $conf['img_threshold'] ){
-			$color = true;
-		}
+		// 一旦ラスタライズしないとtrimの段階でグレースケール化が消滅する。
+		$buf = new Imagick();
+		$buf->readImageBlob( $image->getImageBlob() );
+		$image->destroy();
+		$image = $buf;
 
 		$base_width = $image->getImageWidth(); //横幅（ピクセル）
 		$base_height = $image->getImageHeight(); //縦幅（ピクセル）
 
-		$image->trimImage( 50.0 );
+		if( $TEST_MODE ){
+			print "b_width:$base_width\n";
+			print "b_height:$base_height\n";
+		}
+
+		$image->trimImage( $conf['trim'] );
 		$width = $image->getImageWidth(); //横幅（ピクセル）
 		$height = $image->getImageHeight(); //縦幅（ピクセル）
 		if( $base_width == $width && $base_height == $height ){
 			//トリミングされてない(変な枠とかある？
-			print "no trim\n";
+		//	print "no trim\n";
 
 			$clone = $image->clone();
 
-			$clone->levelImage(0,1/$conf['gamma'],60535);
-			$clone->cropImage( $base_width-64,$base_height-8	,32,4);
-			$clone->trimImage( 50.0 );
+		//	$clone->levelImage(0,1/$conf['gamma'],60535);
+			$clone->cropImage( $base_width-64,$base_height-16,32,8);
+			$clone->trimImage( $conf['trim'] );
 
 			$width = $clone->getImageWidth(); //横幅（ピクセル）
 			$height = $clone->getImageHeight(); //縦幅（ピクセル）
@@ -109,6 +95,11 @@ if( $argc > 1 ){
 			}else{
 				$clone->destroy();
 			}
+		}
+
+		if( $TEST_MODE ){
+			print "width:$width\n";
+			print "height:$height\n";
 		}
 
 		//拡大される場合
@@ -136,44 +127,257 @@ if( $argc > 1 ){
 
 		$canvas->newImage( $conf['width'], $conf[ 'height' ], new ImagickPixel("white"));
 		$canvas->compositeImage($image,imagick::COMPOSITE_OVER,$l_margine,$t_margine);
-		$image->clear();
 
+		$image->destroy();
+		
 		$canvas->setImageFormat( $ext );
 
-		//level,ガンマ補正
-		//$canvas->gammaImage( 1.0/$conf['gamma'] );
-		$canvas->levelImage(0,1/$conf['gamma'],60535);
-		if( $ext == 'jpg' ){
-			//グレースケール化
-			$canvas->setImageColorspace(Imagick::COLORSPACE_GRAY);
-		}else{
-			//色深度
-			$canvas->setImageDepth(4);
-		}
-
-		$im = new Imagick();
-		$im->readImageBlob( $canvas->getImageBlob() );
-		$im->setImageFormat( $ext );
-		$pdf->addImage( $im );
+		$pdf->addImage( $canvas );
 		if( $TEST_MODE ){
-			$canvas->writeImage( sprintf( "./tmp/%04d.tmp", $i ) );
+			$canvas->writeImage( sprintf( "./tmp/%04d.tmp", $inputFile->getIndex() ) );
 		}
 		$canvas->clear();
-		$im->clear();
+
 	}
 	$pdf->setFormat("pdf");
 	$pdf->writeImages( $output_file_name, true );
 	$pdf->clear();
 
 	$canvas->destroy();
-	$image->destroy();
 	$pdf->destroy();
-	$za->close();
+
+	$inputFile->close();
 
 	print "time:".(time()-$start)."sec";
 
 }else{
 	print "not args";
 }
+
+
+
+//class file2img
+
+class InputFile{
+	var $filename;
+	var $dirname;
+	var $extension;
+
+	var $author;
+	var $title;
+
+	var $currentExt;
+
+	function __construct( $input_file_name, $path_data ){
+		if(	preg_match( "/\[(.*?)\](.*)/", $path_data[ 'filename' ], $matches ) ){
+			$this->author = mb_convert_encoding($matches[1],"UTF-8");
+			$this->title = mb_convert_encoding($matches[2],"UTF-8");
+		}else{
+			$this->author = 'unknown';
+			$this->title = mb_convert_encoding($path_data[ 'filename' ],"UTF-8");
+		}
+
+		$this->filename = $path_data[ 'filename' ];
+		$this->dirname = $path_data[ 'dirname' ];
+		$this->extension = $path_data[ 'extension' ];
+	}
+
+	function getImage(){ }
+	function hasNext(){ }
+	function close(){ }
+	function checkColor(){}
+	function getIndex(){}
+
+	function getCurrentExt(){
+		return $this->currentExt;
+	}
+}
+
+Class InputZipFile extends InputFile{
+	var $za;
+
+	var $i;
+	var $currentStat;
+
+	function __construct( $input_file_name, $path_data ){
+		parent::__construct($input_file_name, $path_data);	
+		
+		$this->za = new ZipArchive();
+		$this->za->open( $input_file_name);
+	}
+
+	function getImage(){
+		global $TEST_MODE;
+		while( $this->i < $this->za->numFiles ){
+			$stat = $this->za->statIndex( $this->i );
+			$file_name = mb_convert_encoding( ( $stat['name']  ),"UTF8","SJIS" );
+			$path_data = pathinfo( $file_name );
+			if( $TEST_MODE  )
+				print $file_name."\n";
+			$ext = $path_data[ "extension" ];
+			if( $stat['size'] <= 0 || !in_array( $ext, Array("jpg","png","jpeg","gif") ) ){
+				print "no support extension.\n";
+				$this->i++;
+				continue;
+			}
+			$this->currentExt = $ext;
+			$this->currentStat = $stat;
+			
+			if( $TEST_MODE && $this->i%30 ){
+				$this->i++;
+				continue;
+			}
+			$image = new Imagick();
+			$image->readImageBlob($this->za->getFromIndex($this->i));
+			
+			$this->i++;
+			return $image;
+		}
+		return false;
+	}
+
+	function checkColor(){
+		global $conf;
+		return $this->currentStat[ "size" ] > $conf['img_threshold'];
+	}
+
+	function close(){
+		$this->za->close();
+	}
+
+	function getIndex(){
+		return $this->i;
+	}
+}
+Class InputPDFFile extends InputFile{
+	var $pdf;
+	var $pageCnt;
+	var $i;
+
+	var $color;
+	function __construct( $input_file_name, $path_data ){
+		parent::__construct($input_file_name, $path_data);	
+		
+		$this->pdf = new FPDImage();
+		$this->pageCnt = $this->pdf->setSourceFile( $input_file_name );
+		$this->i = 0;
+		$this->currentExt = "jpeg";
+		$this->color = true;
+
+		$this->title = $this->title."_kin";
+	}
+	function getImage(){
+	global $TEST_MODE;
+		
+		while( $this->i < $this->pageCnt ){
+			if( $TEST_MODE && $this->i%30 ){
+				$this->i++;
+				continue;
+			}
+			$data = $this->pdf->getImage( $this->i +1 );
+			$this->i++;
+
+			if( is_null( $data ) ){ continue; }
+			if( $TEST_MODE  )
+				print "pdf[".$this->i."] load.\n";
+			$image = new Imagick();
+			$image->setResolution( 72, 72 );
+			$image->readImageBlob($data['blob']);
+
+			if( $TEST_MODE  )
+				$image->writeImage( sprintf( "./tmp/debug%04d.tmp",$this->i ) );
+
+			$this->color = ( $data['colorspace'] ==  "/DeviceRGB" );
+
+			return $image;
+		}
+		return false;
+	}
+	function checkColor(){ return $this->color; }
+	function getIndex(){
+		return $this->i;
+	}
+
+	function close(){
+		$this->pdf->Close();
+	}
+}
+
+Class InputPDFFileIM extends InputFile{
+	var $pdf;
+	var $next;
+	function __construct( $input_file_name, $path_data ){
+		parent::__construct($input_file_name, $path_data);	
+		
+
+		$this->pdf = new Imagick( $input_file_name );
+		$this->pdf->setFirstIterator();
+		$this->next = $this->pdf->hasNextImage();
+
+		$this->title = $this->title."_out";
+	}
+	function getImage(){
+	global $TEST_MODE;
+		if( $this->next ){
+			$image = $this->pdf->getImage();
+
+			//$image->setImageUnits(0);
+			//$image->setImagePage(
+			/*$image->setImageExtent (
+				$image->getImageWidth()*25.4  ,
+				$image->getImageHeight()*25.4
+			);*/
+
+			//debug
+			$image->writeImage( sprintf( "./tmp/debug%04d.pdf",$this->pdf->getIteratorIndex() ) );
+
+			print "pdf[".$this->pdf->getIteratorIndex()."] load.\n";
+			$this->pdf->nextImage();
+			$this->next = $this->pdf->hasNextImage();
+			if( $TEST_MODE ){
+				for( $i=0;$i<29;$i++){
+					$this->pdf->nextImage();
+					$this->next = $this->pdf->hasNextImage();
+					if(! $this->next ){ return false; }
+				}
+			}
+			return $image;
+		}else{
+			return false;
+		}
+	}
+	function getCurrentExt(){ return 'pdf'; }
+	function checkColor(){ return false; }
+	function getIndex(){
+		return $this->pdf->getIteratorIndex();
+	}
+
+	function close(){
+		$this->pdf->destroy();
+	}
+}
+
+Class InputFileFactory
+{
+	static function getInputFile( $input_file_name ){
+		$input_file_name =  realpath($input_file_name );
+
+		if (!file_exists( $input_file_name ) ){
+			exit( "input file not found.");
+		}
+		print "input file '$input_file_name'\n";
+		$path_data = pathinfo( $input_file_name );
+
+		switch( strtolower( $path_data[ "extension" ] ) ){
+			case "zip":
+				return new InputZipFile( $input_file_name, $path_data );
+			case "pdf":
+				return new InputPDFFile( $input_file_name, $path_data );
+			default:
+				exit( "no zip file.");
+		}
+	}
+}
+
 
 ?>
